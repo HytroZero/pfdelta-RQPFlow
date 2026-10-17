@@ -300,7 +300,7 @@ GRQP 的多级尝试和 GNPF 的方向计算、子空间修正会引入额外工
 从仓库根目录执行以下命令，只读取已有结果并重建补充报告：
 
 ```powershell
-conda run -n torchx python docs/experiments/client_pf_benchmark_20261017/code/build_four_method_report.py
+conda run -n pfdelta python docs/experiments/client_pf_benchmark_20261017/code/build_four_method_report.py
 ```
 
 构建过程检查四种方法是否各覆盖相同的 6,600 个请求、是否有重复或缺失、收敛标志是否满足目标残差，以及新汇总是否与既有主表一致。数值表与图表由原始记录生成；本次没有新增评测测量。

@@ -1,241 +1,101 @@
-**RQPFlow report:** [Method and experimental results (中文)](docs/rqpflow_report.md).
+# RQPFlow: Reusable Quadratic Power Flow
 
-__Note (March 26, 2026):__ We were notified of a bug in the training loss function of CANOS PF (in particular, the method `constraint_violations_loss_pf` located in  `core/utils/pf_losses_utils.py`. The bug incorrectly calculates reactive power mismatch and line branch flow mismatch. The bug has been fixed.
+RQPFlow is a training-free AC power-flow solver for repeated operating conditions. It solves a reference case once, caches a sparse Jacobian LU factorization, and reuses it as loads and generator setpoints change. The solver runs on CPU in double precision and returns bus voltages, net injections, and complex power flows at both ends of every branch.
 
-# PFΔ Dataset
+[Method and experimental report](docs/rqpflow_report.md) (Chinese) · [Four-solver comparison](docs/four_method_compare.md) (Chinese) · [MIT License](LICENSE)
 
-PFΔ is a benchmark dataset for power flow that captures diverse variations in load, generation, and topology. It contains 859,800 solved power flow instances spanning six different bus system sizes, capturing three types of contingency scenarios (N, N-1, and N-2), and including close-to-infeasible cases near steady-state voltage stability limits. Our dataset is available at: https://huggingface.co/datasets/pfdelta/pfdelta/tree/main. Our paper is available at: https://arxiv.org/abs/2510.22048.
+## Results at a glance
 
-## RQPFlow solver
+On the first 100 feasible N-topology validation cases from PFDelta Task 1.3 (IEEE 118-bus), RQPFlow reached a power-mismatch threshold of **1e-8 p.u. in 3.01 ms**, compared with **11.50 ms** for flat-start sparse Newton: **3.82x faster** by median time to the same error.
 
-This repository includes RQPFlow, a CPU FP64 solver for repeated AC power flow
-with reusable reference factorizations and optional cross-topology low-rank
-updates. It requires no training. See the [RQPFlow report](docs/rqpflow_report.md)
-for the method and experimental results.
+![IEEE 118-bus: power mismatch versus elapsed time and time to reach the same error](figures/fig_rqpflow_case118_error_time.png)
 
-```powershell
-conda run -n torchx python -m scripts.solve_rqpflow --reference examples/rqpflow/reference.json --input examples/rqpflow/requests.jsonl --output runs/rqpflow/solutions.json
+*From the [RQPFlow report](docs/rqpflow_report.md). Left: power mismatch at equal elapsed time. Right: time to reach each error threshold. Shading shows the interquartile range.*
+
+| Method | Median time to 1e-8 p.u. | Converged solves |
+| --- | ---: | ---: |
+| **RQPFlow** | **3.01 ms** | **300/300** |
+| Sparse Newton, flat start | 11.50 ms | 300/300 |
+| Sparse Newton, reference start | 11.78 ms | 300/300 |
+
+The reported protocol uses CPU FP64, batch size 1, warmup, rotating method order, and three timing repetitions per case. Repetitions are reduced to a median per case before taking the median across cases. Online timing excludes data loading and reference precomputation; precomputation took 14.95 ms. Error is the largest absolute active- or reactive-power mismatch component at the returned voltage state.
+
+A separate single-pass evaluation of the same 100 cases recorded **17 online LU factorizations**, compared with **456** for flat-start Newton. Including six factorizations during reference construction, RQPFlow used **23 factorizations in total**, a **95.0% reduction**. That single-pass evaluation achieved a **3.49x total-time speedup including reference precomputation**. The report gives the measurement details and branch-flow accuracy checks.
+
+## How it works
+
+For a fixed network and bus-type assignment, rectangular voltage coordinates turn the AC power-flow equations into an exactly quadratic system:
+
+$$
+F(x+d;u) = F(x;u) + J(x;u)d + Q(d,d).
+$$
+
+Here, $x$ contains the real and imaginary voltages at non-slack buses, and $u$ contains the prescribed operating quantities. RQPFlow uses this structure to compute analytic Jacobian-vector products and reuse numerical work across requests.
+
+1. **Build a reusable reference.** Solve a reference operating point with sparse Newton, form its rectangular-coordinate Jacobian, and cache its sparse LU factors. Reference construction uses prescribed inputs and requires no stored solution labels.
+2. **Start each request from the reference.** Adjust the reference voltage to the requested slack frame and PV voltage magnitudes, then use the cached factors for inexpensive chord-iteration steps.
+3. **Apply current-state corrections when needed.** If residual contraction is insufficient, use matrix-free Newton-GMRES with analytic Jacobian-vector products and the cached LU as a preconditioner.
+4. **Refresh locally after a failed step.** A residual-decreasing line search checks each update. If a direction fails, factor the current Jacobian for that request. The shared reference cache stays unchanged.
+
+Each request starts from the same reference cache, so solving a new case does not depend on the previous request's solution. Success requires both the internal rectangular residual and the power residual of the returned voltage state to meet the configured tolerance.
+
+By default, reuse requires matching bus types, branch connectivity and ordering, branch parameters, and shunts. Loads, active-power setpoints, PV voltage magnitudes, and slack voltage settings may vary. Optional cross-topology reuse is available through `--topology-reuse`; `--v2` enables the low-rank/scaled-merit preset. These modes require consistent bus identity and ordering, slack indices, and electrical islands.
+
+## Quick start
+
+Run the following commands from the repository root. Create a dedicated environment and install the solver dependencies:
+
+```sh
+conda create -n pfdelta python=3.11
+conda activate pfdelta
+python -m pip install -r requirements-rqpflow.txt
 ```
 
-# Dataset Overview
+Solve the included three-bus example, which requires no dataset download or training:
 
-The dataset includes solved power flow instance for the following power systems tests cases: IEEE 14-bus, IEEE 30-bus, IEEE 57-bus, IEEE 118-bus, GOC 500-bus, and GOC 2000-bus. For test case we provide multiple topological configurations:
-- N: original (unperturbed) topology
-- N-1: single-component outage scenarios
-- N-2: double-component outage scenarios
-
-
-For each test case, we include solved power flow instances produced through our data generation workflow (see **Figure 1**), as well as approaching infeasible and close-to-infeasible samples produced through continuation power flow.
-
-<p align="center" style="background-color:white; padding:10px;">
-  <img src="figures/data_generation.png" alt="Data Generation Pipeline" width="700"/>
-</p>
-
-<p align="center"><b>Figure 1.</b> Data generation pipeline.</p>
-
-The following Tables summarize the amount of samples provided for each test case: 
-<p align="center" style="background-color:white; padding:10px;">
-  <img src="figures/train_samples_table.png" alt="Training Samples Table" width="700"/>
-</p>
-
-<p align="center">
-  <b>Table 1.</b> Number of training samples generated for each network topology and system size.
-</p>
-
-<p align="center" style="background-color:white; padding:10px;">
-  <img src="figures/test_samples_table.png" alt="Test Samples Table" width="700"/>
-</p>
-
-<p align="center">
-  <b>Table 2.</b> Number of test samples generated for each network topology and system size.
-</p>
-
-# Standardized Evaluation Tasks
-
-We provide a set of standardized evaluation tasks to evaluate in- and out-of-distribution performance, data efficiency, and performance on close-to-infeasible cases. The summary of all evaluation tasks is shown in the following table:
-
-<p align="center" style="background-color:white; padding:10px;">
-  <img src="figures/tasks_table.png" alt="Test Samples Table" width="700"/>
-</p>
-
-<p align="center">
-  <b>Table 3.</b> Standardized evaluation tasks included for PFΔ.
-</p>
-
-Each task defines a specific evaluation setting, but any of the provided datasets can be used with these tasks to benchmark model performance under different conditions.  The only exception is the GOC 2000-bus system due to the limited number of available samples.
-
-
-# PFΔ Usage Guide 
-
-### Requirements 
---------------------
-
-The Python packages required to use the PFΔ dataset and reproduce the paper's results are listed in `requirements.txt`. Install them with:
-```bash
-pip install -r requirements.txt
+```sh
+python -m scripts.solve_rqpflow --reference examples/rqpflow/reference.json --input examples/rqpflow/requests.jsonl --output runs/rqpflow/solutions.json
 ```
 
-If you want to use the data generation framework or verify power flow solutions, install the Julia packages listed in `data_generation/Project.toml`:
-```bash
-julia --project=data_generation -e 'using Pkg; Pkg.instantiate()'
+The output JSON contains a convergence flag and status for each request, voltage magnitudes and angles, net active/reactive injections, branch-end power flows, PBL Mean/Max, solver statistics, and residual histories. The command exits with code `2` if any request fails to converge.
+
+The example files illustrate the input-only `PFSystem` format: `bus_type`, `known`, `shunt`, `edge_index`, and `edge_attr`. Electrical quantities use per-unit conventions, and angles in this format use radians. JSON/JSONL, NPZ, and unnormalized PT sources are supported. See the [input adapter](scripts/rqpflow_data.py) and [PFSystem contract](core/utils/pf_system.py) for field definitions and conversions.
+
+## Evaluation
+
+Run the bundled example through the evaluator to compare flat-start Newton, reference-start Newton, and RQPFlow with and without local refactorization:
+
+```sh
+python -m scripts.eval_rqpflow --manifest examples/rqpflow/manifest.json --output runs/rqpflow/example_evaluation.json
 ```
 
-**Note:** Julia dependencies are only required for data generation and validation. They are not needed to load and use the pre-generated dataset.
+For PFDelta experiments, the evaluator accepts task, case, split, topology, and feasibility-regime selections. Prepare the corresponding processed caches with the [PFDelta loader](core/datasets/pfdelta_dataset.py) before running a dataset evaluation. Inspect the available options with:
 
-### Dataset Class Usage 
---------------------
-
-The `PFDeltaDataset` class can be instantiated to automatically download and load the dataset from Hugging Face.  
-It handles fetching the data, verifying its integrity, and organizing samples for direct use in training or evaluation.  
-
-For example, the dataset for **Task 1.3** using the **IEEE 118-bus system** can be created with the following Python script:
-
-```python
-from core.datasets.pfdelta_dataset import PFDeltaDataset
-
-dataset = PFDeltaDataset(
-    case_name="case118",
-    task=1.3,
-    root_dir="data"
-)
-```
-We provide several notebooks to serve as a quick start guide to using the `PFDeltaDataset` `InMemoryDataset` and visualizing/analyzing our generated data: 
-
-- [Learn how to download and work with `PFDeltaDataset` for your model](notebooks/dataset_quickstart_guide.ipynb): this notebook includes information on how to automatically download and unzip data from the HuggingFace repository and inherit the parent class for custom model data preprocessing. 
-- [Visualize data diversity compared to other benchmark datasets](notebooks/violin_plots.ipynb): This notebook allows you to visualize the spread of various features in our dataset in comparison to existing benchmark datasets. 
-- [Visualize continuation power flow samples](notebooks/plots_julia.ipynb): This notebook allows you to visualize the condition number and the voltage at a given bus as a function of the continuation parameters. 
-- [Validate the N-1 and N-2 contingencies and power balance satisfaction of our dataset](dataset_report.py): This marimo notebook allows you to run comprehensive tests on our dataset to validate its characteristics. To launch the notebook, **run the following command from the repository root**:
-
-  ```bash
-  marimo edit notebooks/dataset_report.py
-
-#### HeteroData Structure 
-
-We provide a PyTorch `InMemoryDataset` class called `PFDeltaDataset` to load the raw data described in Appendix A.6. This dataset class is designed to support loading data for a specified task for with a given bus system size. Each raw data instance that we load is stored as a JSON file representing the power flow solution for a specific grid configuration. An example of what a HeteroData instance for this dataset looks like is provided below: 
-
-
-    HeteroData(
-      bus={
-        x=[14, 2],
-        y=[14, 2],
-        bus_gen=[14, 2],
-        bus_demand=[14, 2],
-        bus_voltages=[14, 2],
-        bus_type=[14],
-        shunt=[14, 2],
-        limits=[14, 2],
-      },
-      gen={
-        limits=[5, 4],
-        generation=[5, 2],
-        slack_gen=[5],
-      },
-      load={ demand=[11, 2] },
-      (bus, branch, bus)={
-        edge_index=[2, 20],
-        edge_attr=[20, 8],
-        edge_label=[20, 4],
-        edge_limits=[20, 1],
-      },
-      (gen, gen_link, bus)={ edge_index=[2, 5] },
-      (bus, gen_link, gen)={ edge_index=[2, 5] },
-      (load, load_link, bus)={ edge_index=[2, 11] },
-      (bus, load_link, load)={ edge_index=[2, 11] }
-    )
-
-
-#### Directory Structure 
-
-Once data from the Hugging Face repository is extracted, it will be organized as follows. It includes per-topology subfolders (n, n-1, n-2, etc.), each containing raw JSON samples, near-feasibility subsets (nose and around_nose), and model-specific processed tensors for training and evaluation. A top-level processed/ directory also provides combined, ready-to-use datasets across all topologies/task-relevant feasibilities for convenience. An example of what this directory structure would look like is provided below:
-
-```markdown
-pfdelta_data/
-└── case57/
-    ├── n-1/
-    │   ├── raw/
-    │   │   ├── sample1.json
-    │   │   ├── sample2.json
-    │   │   └── ...
-    │   ├── processed/
-    │   │   ├── task_1.3_feasible_{MODELNAME}/
-    │   │   │   ├── train.pt
-    │   │   │   └── test.pt
-    │   │   ├── task_1.3_nearly_infeasible_{MODELNAME}/
-    │   │   └── ...
-    │   ├── nose/
-    │   │   ├── train/
-    │   │   │   ├── sample_1_nose.json
-    │   │   │   ├── sample_2_nose.json
-    │   │   │   └── ...
-    │   │   └── test/
-    │   │       ├── sample_1_nose.json
-    │   │       ├── sample_2_nose.json
-    │   │       └── ...
-    │   └── around_nose/
-    │       └── train/
-    │           ├── sample_1_lam_0p1.json
-    │           ├── sample_2_lam_0p2.json
-    │           └── ...
-    ├── n/
-    ├── n-2/
-    └── ...
-└── processed/
-    └── combined_task_1.3_{MODELNAME}/
-        ├── train.pt
-        └── test.pt
+```sh
+python -m scripts.eval_rqpflow --help
 ```
 
-### Results Replication
---------------------
+Evaluation exports the code revision, reference-construction cost, convergence statuses, per-request timings, factorization counts, PBL Mean/Max, and branch-flow discrepancies against converged Newton solutions. Feasible and close-to-infeasible results are grouped separately.
 
-To replicate the results presented in the paper, use the configuration files located in `core/configs/`.  Each YAML file corresponds to a specific model–task combination and follows the naming convention:
+## Dataset
 
-where  
-- `{modelname}` ∈ [`pfnet`, `canos_pf`, `canos_opf`, ...]  
-- `{tasknumber}` ∈ [`1.1`, `1.2`, `1.3`, ...]  
+This repository builds on **PFDelta**, a benchmark containing 859,800 solved AC power-flow instances across IEEE 14/30/57/118-bus and GOC 500/2000-bus systems. It covers load and generation variations, N/N-1/N-2 topologies, and close-to-infeasible operating conditions. Dataset loaders, generation code, and original learning baselines are retained here.
 
-The models can be located in `core/models`.
+- [Dataset on Hugging Face](https://huggingface.co/datasets/pfdelta/pfdelta/tree/main)
+- [PFDelta paper](https://arxiv.org/abs/2510.22048)
 
-For example, the following command retrains **PowerFlowNet** on **Task 1.3**:
+If you use the dataset or its original benchmark code, please cite:
 
-```bash
-python main.py --config pfnet_task_1_3
-```
-Additionally, a config file verifying the correct re-implementation of CANOS is included. Running any configuration file will automatically create a runs/ directory containing experiment outputs (e.g., runs/canos_pf_task_1_1_<YYMMDD_HHMMSS>). Its structure is as follows:
-
-```bash 
-runs/
-└── modelname_task_#_#_<YYMMDD_HHMMSS>/
-    ├── config.yaml         # Model and training hyperparameters
-    ├── model.pt            # Trained model weights
-    ├── out.txt             # Console log of training
-    ├── summary.json        # Summary of training and validation losses
-    ├── train.json          # Training loss per epoch
-    └── val.json            # Validation loss every 2 epochs
-``` 
-
-The summary.json file can be used to quickly compare performance against the values reported in the paper. Note that the paper’s results are test-set errors averaged over three different random seeds, whereas the results in summary.json reflect validation losses from a single training run. As a result, minor discrepancies between the two are expected. 
-
-In addition, we provide quick-start notebooks for training models and designing custom loss functions: 
-- [Calculating Test Errors and Performing Model Inference](notebooks/julia_code_results.ipynb): COMING SOON
-- [Designing Custom Loss Functions](notebooks/julia_code_results.ipynb): COMING SOON
-
-### Notes:
-------
-- All values are in per-unit (p.u.).
-- All JSON files are compatible with PowerModels.jl for loading, solving, or further analysis.
-
-
-### Citation:
-------
-If you use any of our model implementations, data generation code, dataset class, or benchmark, please consider citing us: 
-```
-@inproceedings{
-rivera2025pf,
-title={{PF}\ensuremath{\Delta}: A Benchmark Dataset for Power Flow under Load, Generation, and Topology Variations},
-author={Ana K. Rivera and Anvita Bhagavathula and Alvaro Carbonero and Priya L. Donti},
-booktitle={The Thirty-ninth Annual Conference on Neural Information Processing Systems Datasets and Benchmarks Track},
-year={2025},
-url={https://openreview.net/forum?id=Gi1HtsTAkv}
+```bibtex
+@inproceedings{rivera2025pf,
+  title={{PF}\ensuremath{\Delta}: A Benchmark Dataset for Power Flow under Load, Generation, and Topology Variations},
+  author={Ana K. Rivera and Anvita Bhagavathula and Alvaro Carbonero and Priya L. Donti},
+  booktitle={The Thirty-ninth Annual Conference on Neural Information Processing Systems Datasets and Benchmarks Track},
+  year={2025},
+  url={https://openreview.net/forum?id=Gi1HtsTAkv}
 }
 ```
+
+## License
+
+Released under the [MIT License](LICENSE). The original PFDelta copyright notice is retained.
