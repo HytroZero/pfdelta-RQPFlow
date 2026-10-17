@@ -1,0 +1,6 @@
+# RQPFlow runtime; use the existing environment when already installed.
+numpy>=1.26
+scipy>=1.12
+torch>=2.1
+torch-geometric>=2.6
+threadpoolctl>=3.1

@@ -40,3 +40,8 @@ case2000
 case2000_seeds
 case2000_unif
 logs
+
+# Images shipped with the two delivery reports.
+!figures/fig_rqpflow_case118_error_time.png
+!docs/figures/four_*.png
+!docs/figures/four_*.svg

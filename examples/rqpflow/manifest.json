@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "protocol": "Synthetic three-bus delivery smoke example",
+  "references": {"three_bus": {"source": "reference.json"}},
+  "pools": [{"name": "three_bus", "reference": "three_bus", "source": "requests.jsonl", "split": "example", "regime": "feasible", "topology": "n"}]
+}

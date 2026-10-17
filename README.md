@@ -2,7 +2,18 @@ __Note (March 26, 2026):__ We were notified of a bug in the training loss functi
 
 # PFΔ Dataset
 
-PFΔ is a benchmark dataset for power flow that captures diverse variations in load, generation, and topology. It contains 859,800 solved power flow instances spanning six different bus system sizes, capturing three types of contingency scenarios (N, N-1, and N-2), and including close-to-infeasible cases near steady-state voltage stability limits. Our dataset is available at: https://huggingface.co/datasets/pfdelta/pfdelta/tree/main. Our paper is available at: https://arxiv.org/abs/2510.22048. 
+PFΔ is a benchmark dataset for power flow that captures diverse variations in load, generation, and topology. It contains 859,800 solved power flow instances spanning six different bus system sizes, capturing three types of contingency scenarios (N, N-1, and N-2), and including close-to-infeasible cases near steady-state voltage stability limits. Our dataset is available at: https://huggingface.co/datasets/pfdelta/pfdelta/tree/main. Our paper is available at: https://arxiv.org/abs/2510.22048.
+
+## RQPFlow solver
+
+This repository includes RQPFlow, a CPU FP64 solver for repeated AC power flow
+with reusable reference factorizations and optional cross-topology low-rank
+updates. It requires no training. See the [delivery guide](docs/models/rqpflow.md)
+for the Python API, input/output contract, benchmark evaluation and validation.
+
+```powershell
+conda run -n torchx python -m scripts.solve_rqpflow --reference examples/rqpflow/reference.json --input examples/rqpflow/requests.jsonl --output runs/rqpflow/solutions.json
+```
 
 # Dataset Overview
 
